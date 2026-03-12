@@ -74,24 +74,6 @@ func TestConfigParsing(t *testing.T) {
 		// Run test
 		assert.Error(t, config.Load("", fsys))
 	})
-
-	t.Run("experimental pgdelta settings", func(t *testing.T) {
-		var testConfig config
-		_, err := toml.Decode(`
-		[experimental.pgdelta]
-		declarative_dir_path = "./declarative-schemas"
-		format_options = '{"keywordCase":"lower"}'
-		generate_args = ["--verbose"]
-		migrate_args = ["--role","postgres"]
-		apply_args = ["--verbose"]
-		`, &testConfig)
-		require.NoError(t, err)
-		assert.Equal(t, "./declarative-schemas", testConfig.Experimental.Pgdelta.DeclarativeDirPath)
-		assert.Equal(t, `{"keywordCase":"lower"}`, testConfig.Experimental.Pgdelta.FormatOptions)
-		assert.Equal(t, []string{"--verbose"}, testConfig.Experimental.Pgdelta.GenerateArgs)
-		assert.Equal(t, []string{"--role", "postgres"}, testConfig.Experimental.Pgdelta.MigrateArgs)
-		assert.Equal(t, []string{"--verbose"}, testConfig.Experimental.Pgdelta.ApplyArgs)
-	})
 }
 
 func TestRemoteOverride(t *testing.T) {

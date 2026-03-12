@@ -354,13 +354,6 @@ s3_access_key = ""
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = ""
 
-[experimental.pgdelta]
-declarative_dir_path = "./declarative-schemas"
-format_options = "{\"keywordCase\":\"lower\"}"
-generate_args = ["--verbose"]
-migrate_args = ["--role", "postgres"]
-apply_args = ["--verbose"]
-
 [remotes.production]
 project_id = "vpefcjyosynxeiebfscx"
 

@@ -102,9 +102,7 @@ func pullDeclarativePgDelta(ctx context.Context, schema []string, config pgconn.
 	if err := declarative.WriteDeclarativeSchemas(exported, fsys); err != nil {
 		return err
 	}
-	if declarativeDir, err := declarative.DeclarativeDirPath(); err == nil {
-		fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(declarativeDir))
-	}
+	fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(utils.DeclarativeDir))
 	return nil
 }
 

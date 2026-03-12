@@ -9,14 +9,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 	"github.com/go-errors/errors"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/spf13/afero"
-	"github.com/supabase/cli/internal/db/shadow"
 	"github.com/supabase/cli/internal/db/start"
 	"github.com/supabase/cli/internal/gen/keys"
 	"github.com/supabase/cli/internal/pgdelta"
@@ -90,18 +94,50 @@ func findDropStatements(out string) []string {
 }
 
 func CreateShadowDatabase(ctx context.Context, port uint16) (string, error) {
-	return shadow.CreateDatabase(ctx, port)
+	// Disable background workers in shadow database
+	config := start.NewContainerConfig("-c", "max_worker_processes=0")
+	hostPort := strconv.FormatUint(uint64(port), 10)
+	hostConfig := container.HostConfig{
+		PortBindings: nat.PortMap{"5432/tcp": []nat.PortBinding{{HostPort: hostPort}}},
+		AutoRemove:   true,
+	}
+	networkingConfig := network.NetworkingConfig{}
+	if utils.Config.Db.MajorVersion <= 14 {
+		hostConfig.Tmpfs = map[string]string{"/docker-entrypoint-initdb.d": ""}
+	}
+	return utils.DockerStart(ctx, config, hostConfig, networkingConfig, "")
 }
 
 func ConnectShadowDatabase(ctx context.Context, timeout time.Duration, options ...func(*pgx.ConnConfig)) (conn *pgx.Conn, err error) {
-	return shadow.Connect(ctx, timeout, options...)
+	// Retry until connected, cancelled, or timeout
+	policy := start.NewBackoffPolicy(ctx, timeout)
+	config := pgconn.Config{Port: utils.Config.Db.ShadowPort}
+	connect := func() (*pgx.Conn, error) {
+		return utils.ConnectLocalPostgres(ctx, config, options...)
+	}
+	return backoff.RetryWithData(connect, policy)
 }
 
 // Required to bypass pg_cron check: https://github.com/citusdata/pg_cron/blob/main/pg_cron.sql#L3
-const CREATE_TEMPLATE = shadow.CreateTemplateSQL
+const CREATE_TEMPLATE = "CREATE DATABASE contrib_regression TEMPLATE postgres"
 
 func MigrateShadowDatabase(ctx context.Context, container string, fsys afero.Fs, options ...func(*pgx.ConnConfig)) error {
-	return shadow.Migrate(ctx, container, fsys, options...)
+	migrations, err := migration.ListLocalMigrations(utils.MigrationsDir, afero.NewIOFS(fsys))
+	if err != nil {
+		return err
+	}
+	conn, err := ConnectShadowDatabase(ctx, 10*time.Second, options...)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.Background())
+	if err := start.SetupDatabase(ctx, conn, container[:12], os.Stderr, fsys); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, CREATE_TEMPLATE); err != nil {
+		return errors.Errorf("failed to create template database: %w", err)
+	}
+	return migration.ApplyMigrations(ctx, migrations, conn, afero.NewIOFS(fsys))
 }
 
 func DiffDatabase(ctx context.Context, schema []string, config pgconn.Config, w io.Writer, fsys afero.Fs, differ DiffFunc, usePgDelta bool, options ...func(*pgx.ConnConfig)) (string, error) {

@@ -201,9 +201,6 @@ func GetRegistryImageUrl(imageName string) string {
 	}
 	// Configure mirror registry
 	parts := strings.Split(imageName, "/")
-	if len(parts) >= 2 && parts[0] != "supabase" {
-		return imageName
-	}
 	imageName = parts[len(parts)-1]
 	return registry + "/supabase/" + imageName
 }

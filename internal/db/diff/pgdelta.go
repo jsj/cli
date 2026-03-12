@@ -6,16 +6,17 @@ import (
 	_ "embed"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-errors/errors"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/supabase/cli/internal/gen/types"
-	"github.com/supabase/cli/internal/pgdelta"
 	"github.com/supabase/cli/internal/utils"
 )
+
+//go:embed templates/pgdelta.ts
+var pgDeltaScript string
 
 //go:embed templates/pgdelta_declarative_export.ts
 var pgDeltaDeclarativeExportScript string
@@ -65,15 +66,31 @@ func DiffPgDelta(ctx context.Context, source, target pgconn.Config, schema []str
 // DiffPgDeltaRef supports pg-delta diffing across both live database URLs and
 // on-disk catalog references used by declarative sync commands.
 func DiffPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []string, options ...func(*pgx.ConnConfig)) (string, error) {
-	args := []string{}
-	if len(schema) == 0 {
-		args = append(args, "--integration", "supabase")
-	} else if integration, err := schemaScopedIntegrationArg(schema); err != nil {
-		return "", err
-	} else {
-		args = append(args, "--integration", integration)
+	env := []string{
+		"TARGET=" + containerRef(targetRef),
 	}
-	return pgdelta.DiffSQL(ctx, sourceRef, targetRef, args, options...)
+	if len(sourceRef) > 0 {
+		env = append(env, "SOURCE="+containerRef(sourceRef))
+	}
+	if isPostgresURL(targetRef) {
+		if ca, err := types.GetRootCA(ctx, targetRef, options...); err != nil {
+			return "", err
+		} else if len(ca) > 0 {
+			env = append(env, "PGDELTA_TARGET_SSLROOTCERT="+ca)
+		}
+	}
+	if len(schema) > 0 {
+		env = append(env, "INCLUDED_SCHEMAS="+strings.Join(schema, ","))
+	}
+	binds := []string{utils.EdgeRuntimeId + ":/root/.cache/deno:rw"}
+	if cwd, err := os.Getwd(); err == nil {
+		binds = append(binds, cwd+":/workspace")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := utils.RunEdgeRuntimeScript(ctx, env, pgDeltaScript, binds, "error diffing schema", &stdout, &stderr); err != nil {
+		return "", err
+	}
+	return stdout.String(), nil
 }
 
 // DeclarativeExportPgDelta exports target schema as declarative file payloads
@@ -143,96 +160,4 @@ func ExportCatalogPgDelta(ctx context.Context, targetRef, role string, options .
 		return "", err
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-// TODO: Remove this once pg-delta support an `extend` fields within integrations, to simply
-// extend the base supabase with additional schemas filters
-func schemaScopedIntegrationArg(schema []string) (string, error) {
-	filter := map[string]any{
-		"and": []any{
-			map[string]any{
-				"or": []any{
-					map[string]any{
-						"and": []any{
-							map[string]any{"type": "schema", "operation": "create", "scope": "object"},
-							map[string]any{"not": map[string]any{"schema": []string{
-								"_analytics", "_realtime", "_supavisor", "auth", "cron", "extensions",
-								"graphql", "graphql_public", "information_schema", "net", "pgbouncer",
-								"pgmq", "pgmq_public", "pgsodium", "pgsodium_masks", "pgtle", "realtime",
-								"storage", "supabase_functions", "supabase_migrations", "vault",
-							}}},
-						},
-					},
-					map[string]any{"type": "extension", "operation": "create", "scope": "object"},
-					map[string]any{
-						"not": map[string]any{
-							"or": []any{
-								map[string]any{"schema": []string{
-									"_analytics", "_realtime", "_supavisor", "auth", "cron", "extensions",
-									"graphql", "graphql_public", "information_schema", "net", "pgbouncer",
-									"pgmq", "pgmq_public", "pgsodium", "pgsodium_masks", "pgtle", "realtime",
-									"storage", "supabase_functions", "supabase_migrations", "vault",
-								}},
-								map[string]any{"owner": []string{
-									"anon", "authenticated", "authenticator", "cli_login_postgres",
-									"dashboard_user", "pgbouncer", "pgsodium_keyholder", "pgsodium_keyiduser",
-									"pgsodium_keymaker", "pgtle_admin", "service_role", "supabase_admin",
-									"supabase_auth_admin", "supabase_etl_admin", "supabase_functions_admin",
-									"supabase_read_only_user", "supabase_realtime_admin",
-									"supabase_replication_admin", "supabase_storage_admin", "supabase_superuser",
-								}},
-								map[string]any{
-									"and": []any{
-										map[string]any{"type": "role", "scope": "membership"},
-										map[string]any{"member": []string{
-											"anon", "authenticated", "authenticator", "cli_login_postgres",
-											"dashboard_user", "pgbouncer", "pgsodium_keyholder", "pgsodium_keyiduser",
-											"pgsodium_keymaker", "pgtle_admin", "service_role", "supabase_admin",
-											"supabase_auth_admin", "supabase_etl_admin", "supabase_functions_admin",
-											"supabase_read_only_user", "supabase_realtime_admin",
-											"supabase_replication_admin", "supabase_storage_admin", "supabase_superuser",
-										}},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			map[string]any{"schema": schema},
-		},
-	}
-	integration := map[string]any{
-		"filter": filter,
-		"serialize": []map[string]any{
-			{
-				"when": map[string]any{
-					"type":      "schema",
-					"operation": "create",
-					"scope":     "object",
-					"owner": []string{
-						"anon", "authenticated", "authenticator", "cli_login_postgres",
-						"dashboard_user", "pgbouncer", "pgsodium_keyholder", "pgsodium_keyiduser",
-						"pgsodium_keymaker", "pgtle_admin", "service_role", "supabase_admin",
-						"supabase_auth_admin", "supabase_etl_admin", "supabase_functions_admin",
-						"supabase_read_only_user", "supabase_realtime_admin",
-						"supabase_replication_admin", "supabase_storage_admin", "supabase_superuser",
-					},
-				},
-				"options": map[string]any{"skipAuthorization": true},
-			},
-		},
-	}
-	body, err := json.Marshal(integration)
-	if err != nil {
-		return "", errors.Errorf("failed to encode pg-delta integration: %w", err)
-	}
-	relativePath := filepath.Join(utils.TempDir, "pgdelta", "integration.json")
-	if err := os.MkdirAll(filepath.Dir(relativePath), 0755); err != nil {
-		return "", errors.Errorf("failed to create pg-delta temp dir: %w", err)
-	}
-	if err := os.WriteFile(relativePath, body, 0644); err != nil {
-		return "", errors.Errorf("failed to write pg-delta integration: %w", err)
-	}
-	return containerRef(relativePath), nil
 }

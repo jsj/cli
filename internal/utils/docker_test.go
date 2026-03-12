@@ -106,29 +106,6 @@ func TestPullImage(t *testing.T) {
 	})
 }
 
-func TestGetRegistryImageUrl(t *testing.T) {
-	t.Run("keeps third party namespaced images unchanged", func(t *testing.T) {
-		viper.Set("INTERNAL_IMAGE_REGISTRY", "public.ecr.aws")
-		t.Cleanup(viper.Reset)
-
-		assert.Equal(t, "oven/bun:1.2-alpine", GetRegistryImageUrl("oven/bun:1.2-alpine"))
-	})
-
-	t.Run("rewrites supabase images to mirror registry", func(t *testing.T) {
-		viper.Set("INTERNAL_IMAGE_REGISTRY", "public.ecr.aws")
-		t.Cleanup(viper.Reset)
-
-		assert.Equal(t, "public.ecr.aws/supabase/postgres:15.8.1.093", GetRegistryImageUrl("supabase/postgres:15.8.1.093"))
-	})
-
-	t.Run("rewrites library images to mirror registry", func(t *testing.T) {
-		viper.Set("INTERNAL_IMAGE_REGISTRY", "public.ecr.aws")
-		t.Cleanup(viper.Reset)
-
-		assert.Equal(t, "public.ecr.aws/supabase/postgres:15", GetRegistryImageUrl("postgres:15"))
-	})
-}
-
 func TestRunOnce(t *testing.T) {
 	viper.Set("INTERNAL_IMAGE_REGISTRY", "docker.io")
 
