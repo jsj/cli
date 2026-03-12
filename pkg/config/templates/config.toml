@@ -382,3 +382,15 @@ s3_region = "env(S3_REGION)"
 s3_access_key = "env(S3_ACCESS_KEY)"
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = "env(S3_SECRET_KEY)"
+
+[experimental.pgdelta]
+# Directory, relative to the supabase project directory, where declarative schema files are stored.
+declarative_dir_path = "{{ .Experimental.Pgdelta.DeclarativeDirPath }}"
+# Optional JSON passed to pg-delta declarative export as --format-options.
+format_options = "{{ .Experimental.Pgdelta.FormatOptions }}"
+# Optional extra pg-delta args for `supabase declarative generate`.
+generate_args = []
+# Optional extra pg-delta args for `supabase declarative migrate`.
+migrate_args = []
+# Optional extra pg-delta args for `supabase declarative apply`.
+apply_args = []

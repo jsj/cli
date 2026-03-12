@@ -1,7 +1,9 @@
 package declarative
 
 import (
+	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -27,17 +29,50 @@ func TestWriteDeclarativeSchemas(t *testing.T) {
 	err := WriteDeclarativeSchemas(output, fsys)
 	require.NoError(t, err)
 
-	roles, err := afero.ReadFile(fsys, filepath.Join(utils.DeclarativeDir, "cluster", "roles.sql"))
+	declarativeDir := DeclarativeDir()
+	roles, err := afero.ReadFile(fsys, filepath.Join(declarativeDir, "cluster", "roles.sql"))
 	require.NoError(t, err)
 	assert.Equal(t, "create role app;", string(roles))
 
-	users, err := afero.ReadFile(fsys, filepath.Join(utils.DeclarativeDir, "schemas", "public", "tables", "users.sql"))
+	users, err := afero.ReadFile(fsys, filepath.Join(declarativeDir, "schemas", "public", "tables", "users.sql"))
 	require.NoError(t, err)
 	assert.Equal(t, "create table users(id bigint);", string(users))
 
 	cfg, err := afero.ReadFile(fsys, utils.ConfigPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(cfg), `declarative/`)
+	assert.Contains(t, string(cfg), `declarative-schemas`)
+}
+
+func TestDeclarativeDirUsesExperimentalPgdeltaPath(t *testing.T) {
+	original := utils.Config.Experimental
+	t.Cleanup(func() {
+		utils.Config.Experimental = original
+	})
+	utils.Config.Experimental.Pgdelta.DeclarativeDirPath = "./declarative-schemas"
+
+	assert.Equal(t, filepath.Join(utils.SupabaseDirPath, "declarative-schemas"), DeclarativeDir())
+}
+
+func TestDeclarativeDirRejectsPathOutsideProject(t *testing.T) {
+	original := utils.Config.Experimental
+	t.Cleanup(func() {
+		utils.Config.Experimental = original
+	})
+	utils.Config.Experimental.Pgdelta.DeclarativeDirPath = "../outside"
+
+	_, err := DeclarativeDirPath()
+	assert.ErrorContains(t, err, "must stay within the supabase project directory")
+}
+
+func TestDeclarativeDirRejectsProjectRoot(t *testing.T) {
+	original := utils.Config.Experimental
+	t.Cleanup(func() {
+		utils.Config.Experimental = original
+	})
+	utils.Config.Experimental.Pgdelta.DeclarativeDirPath = "."
+
+	_, err := DeclarativeDirPath()
+	assert.ErrorContains(t, err, "must point to a subdirectory")
 }
 
 func TestWriteDeclarativeSchemasRejectsUnsafePath(t *testing.T) {
@@ -46,6 +81,16 @@ func TestWriteDeclarativeSchemasRejectsUnsafePath(t *testing.T) {
 	err := WriteDeclarativeSchemas(diff.DeclarativeOutput{
 		Files: []diff.DeclarativeFile{
 			{Path: "../oops.sql", SQL: "select 1;"},
+		},
+	}, fsys)
+	assert.ErrorContains(t, err, "unsafe declarative export path")
+}
+
+func TestWriteDeclarativeSchemasRejectsAbsolutePath(t *testing.T) {
+	fsys := afero.NewMemMapFs()
+	err := WriteDeclarativeSchemas(diff.DeclarativeOutput{
+		Files: []diff.DeclarativeFile{
+			{Path: "/tmp/oops.sql", SQL: "select 1;"},
 		},
 	}, fsys)
 	assert.ErrorContains(t, err, "unsafe declarative export path")
@@ -84,4 +129,32 @@ func TestGetMigrationsCatalogRefUsesCache(t *testing.T) {
 	ref, err := getMigrationsCatalogRef(t.Context(), false, fsys)
 	require.NoError(t, err)
 	assert.Equal(t, cachePath, ref)
+}
+
+func TestStatusReportsConfiguredDirectory(t *testing.T) {
+	fsys := afero.NewMemMapFs()
+	original := utils.Config
+	t.Cleanup(func() {
+		utils.Config = original
+	})
+	utils.Config.Experimental.Pgdelta.DeclarativeDirPath = "./declarative-schemas"
+	utils.Config.Db.Migrations.SchemaPaths = []string{"./declarative-schemas"}
+
+	var out bytes.Buffer
+	require.NoError(t, Status(t.Context(), &out, fsys))
+
+	assert.Contains(t, out.String(), "supabase/declarative-schemas")
+	assert.Contains(t, out.String(), "default migrate target")
+}
+
+func TestUpdateDeclarativeSchemaPathsConfigInsertsIntoExistingTable(t *testing.T) {
+	fsys := afero.NewMemMapFs()
+	require.NoError(t, afero.WriteFile(fsys, utils.ConfigPath, []byte("[db]\n\n[db.migrations]\nenabled = true\n"), 0644))
+
+	require.NoError(t, updateDeclarativeSchemaPathsConfig(fsys))
+
+	body, err := afero.ReadFile(fsys, utils.ConfigPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "[db.migrations]\nschema_paths = [")
+	assert.Equal(t, 1, strings.Count(string(body), "[db.migrations]"))
 }

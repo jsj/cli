@@ -236,6 +236,14 @@ type (
 		Fail  string `toml:"fail"`
 	}
 
+	pgdelta struct {
+		DeclarativeDirPath string   `toml:"declarative_dir_path"`
+		FormatOptions      string   `toml:"format_options"`
+		GenerateArgs       []string `toml:"generate_args"`
+		MigrateArgs        []string `toml:"migrate_args"`
+		ApplyArgs          []string `toml:"apply_args"`
+	}
+
 	experimental struct {
 		OrioleDBVersion string    `toml:"orioledb_version"`
 		S3Host          string    `toml:"s3_host"`
@@ -244,6 +252,7 @@ type (
 		S3SecretKey     string    `toml:"s3_secret_key"`
 		Webhooks        *webhooks `toml:"webhooks"`
 		Inspect         inspect   `toml:"inspect"`
+		Pgdelta         pgdelta   `toml:"pgdelta"`
 	}
 )
 
@@ -315,6 +324,9 @@ func (c *baseConfig) Clone() baseConfig {
 		webhooks := *c.Experimental.Webhooks
 		copy.Experimental.Webhooks = &webhooks
 	}
+	copy.Experimental.Pgdelta.GenerateArgs = slices.Clone(c.Experimental.Pgdelta.GenerateArgs)
+	copy.Experimental.Pgdelta.MigrateArgs = slices.Clone(c.Experimental.Pgdelta.MigrateArgs)
+	copy.Experimental.Pgdelta.ApplyArgs = slices.Clone(c.Experimental.Pgdelta.ApplyArgs)
 	return copy
 }
 
@@ -417,6 +429,11 @@ func NewConfig(editors ...ConfigEditor) config {
 		},
 		EdgeRuntime: edgeRuntime{
 			Image: Images.EdgeRuntime,
+		},
+		Experimental: experimental{
+			Pgdelta: pgdelta{
+				DeclarativeDirPath: "./declarative-schemas",
+			},
 		},
 	}}
 	for _, apply := range editors {

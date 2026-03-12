@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,10 +43,25 @@ var (
 	// schemaPathsPattern locates existing schema_paths in config so declarative
 	// writes can replace stale values rather than appending duplicates.
 	schemaPathsPattern = regexp.MustCompile(`(?s)\nschema_paths = \[(.*?)\]\n`)
+	// dbMigrationsHeaderPattern finds the parent table so schema_paths can be
+	// inserted without duplicating the table header in hand-edited configs.
+	dbMigrationsHeaderPattern = regexp.MustCompile(`(?m)^\[db\.migrations\]\n`)
 	// dropStatementRegexp flags potentially destructive statements for UX warnings
 	// when generating migration output from declarative sources.
 	dropStatementRegexp = regexp.MustCompile(`(?i)drop\s+`)
 )
+
+func DeclarativeDirPath() (string, error) {
+	return utils.GetDeclarativeDirPath()
+}
+
+func DeclarativeDir() string {
+	path, err := DeclarativeDirPath()
+	if err != nil {
+		return utils.DeclarativeDir
+	}
+	return path
+}
 
 // Generate exports a live database schema into files under supabase/declarative.
 //
@@ -56,25 +72,28 @@ func Generate(ctx context.Context, schema []string, config pgconn.Config, overwr
 	if err != nil {
 		return err
 	}
-	output, err := diff.DeclarativeExportPgDeltaRef(ctx, sourceRef, utils.ToPostgresURL(config), schema, options...)
-	if err != nil {
-		return err
-	}
-	if !overwrite {
-		ok, err := confirmOverwrite(ctx, fsys)
+	if len(schema) > 0 {
+		output, err := diff.DeclarativeExportPgDeltaRef(ctx, sourceRef, utils.ToPostgresURL(config), schema, options...)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			fmt.Fprintln(os.Stderr, "Skipped writing declarative schema.")
-			return nil
+		if !overwrite {
+			ok, err := confirmOverwrite(ctx, fsys)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Fprintln(os.Stderr, "Skipped writing declarative schema.")
+				return nil
+			}
 		}
+		if err := WriteDeclarativeSchemas(output, fsys); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(DeclarativeDir()))
+		return nil
 	}
-	if err := WriteDeclarativeSchemas(output, fsys); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(utils.DeclarativeDir))
-	return nil
+	return generateToDir(ctx, sourceRef, utils.ToPostgresURL(config), overwrite, fsys, options...)
 }
 
 // SyncFromMigrations renders declarative files from local migration history.
@@ -86,15 +105,18 @@ func SyncFromMigrations(ctx context.Context, schema []string, noCache bool, fsys
 	if err != nil {
 		return err
 	}
-	output, err := diff.DeclarativeExportPgDeltaRef(ctx, "", targetRef, schema, options...)
-	if err != nil {
-		return err
+	if len(schema) > 0 {
+		output, err := diff.DeclarativeExportPgDeltaRef(ctx, "", targetRef, schema, options...)
+		if err != nil {
+			return err
+		}
+		if err := WriteDeclarativeSchemas(output, fsys); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Declarative schema synced from migrations.")
+		return nil
 	}
-	if err := WriteDeclarativeSchemas(output, fsys); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "Declarative schema synced from migrations.")
-	return nil
+	return generateToDir(ctx, "", targetRef, true, fsys, options...)
 }
 
 // SyncToMigrations diffs local declarative files against migration state and
@@ -103,7 +125,11 @@ func SyncFromMigrations(ctx context.Context, schema []string, noCache bool, fsys
 // This closes the loop so declarative-first edits can still flow back into the
 // migration-based deployment pipeline.
 func SyncToMigrations(ctx context.Context, schema []string, file string, noCache bool, fsys afero.Fs, options ...func(*pgx.ConnConfig)) error {
-	if exists, err := afero.DirExists(fsys, utils.DeclarativeDir); err != nil {
+	declarativeDir, err := DeclarativeDirPath()
+	if err != nil {
+		return err
+	}
+	if exists, err := afero.DirExists(fsys, declarativeDir); err != nil {
 		return err
 	} else if !exists {
 		return errors.Errorf("No declarative schema directory found. Run %s first.", utils.Aqua("supabase db declarative generate"))
@@ -138,11 +164,15 @@ func SyncToMigrations(ctx context.Context, schema []string, file string, noCache
 //
 // This guard exists because declarative export rewrites the entire directory.
 func confirmOverwrite(ctx context.Context, fsys afero.Fs) (bool, error) {
-	exists, err := afero.DirExists(fsys, utils.DeclarativeDir)
+	declarativeDir, err := DeclarativeDirPath()
+	if err != nil {
+		return false, err
+	}
+	exists, err := afero.DirExists(fsys, declarativeDir)
 	if err != nil || !exists {
 		return true, err
 	}
-	files, err := afero.ReadDir(fsys, utils.DeclarativeDir)
+	files, err := afero.ReadDir(fsys, declarativeDir)
 	if err != nil {
 		return false, err
 	}
@@ -156,18 +186,22 @@ func confirmOverwrite(ctx context.Context, fsys afero.Fs) (bool, error) {
 // WriteDeclarativeSchemas materializes pg-delta declarative output on disk and
 // updates schema_paths so downstream commands read from declarative files.
 func WriteDeclarativeSchemas(output diff.DeclarativeOutput, fsys afero.Fs) error {
-	if err := fsys.RemoveAll(utils.DeclarativeDir); err != nil {
+	declarativeDir, err := DeclarativeDirPath()
+	if err != nil {
+		return err
+	}
+	if err := fsys.RemoveAll(declarativeDir); err != nil {
 		return errors.Errorf("failed to clean declarative schema directory: %w", err)
 	}
-	if err := utils.MkdirIfNotExistFS(fsys, utils.DeclarativeDir); err != nil {
+	if err := utils.MkdirIfNotExistFS(fsys, declarativeDir); err != nil {
 		return err
 	}
 	for _, file := range output.Files {
 		relPath := filepath.FromSlash(filepath.Clean(file.Path))
-		if strings.HasPrefix(relPath, "..") {
+		if filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "..") {
 			return errors.Errorf("unsafe declarative export path: %s", file.Path)
 		}
-		targetPath := filepath.Join(utils.DeclarativeDir, relPath)
+		targetPath := filepath.Join(declarativeDir, relPath)
 		if err := utils.MkdirIfNotExistFS(fsys, filepath.Dir(targetPath)); err != nil {
 			return err
 		}
@@ -176,7 +210,7 @@ func WriteDeclarativeSchemas(output diff.DeclarativeOutput, fsys afero.Fs) error
 		}
 	}
 	utils.Config.Db.Migrations.SchemaPaths = []string{
-		filepath.Join(utils.DeclarativeDir),
+		declarativeDir,
 	}
 	return updateDeclarativeSchemaPathsConfig(fsys)
 }
@@ -187,19 +221,29 @@ func WriteDeclarativeSchemas(output diff.DeclarativeOutput, fsys afero.Fs) error
 // This makes declarative output the active source of truth for commands that
 // read schema paths from config.
 func updateDeclarativeSchemaPathsConfig(fsys afero.Fs) error {
-	// Remove the `supabase` prefix from the declarative directory
-	declarativeDir := strings.TrimPrefix(utils.DeclarativeDir, "supabase/")
-	lines := []string{
-		"\nschema_paths = [",
+	declarativeDir, err := utils.GetDeclarativeSchemaPathsEntry()
+	if err != nil {
+		return err
+	}
+	schemaPathsLines := []string{
+		"schema_paths = [",
 		fmt.Sprintf(`  "%s",`, declarativeDir),
 		"]\n",
 	}
-	schemaPaths := strings.Join(lines, "\n")
+	schemaPathsBody := strings.Join(schemaPathsLines, "\n")
+	schemaPaths := "\n" + schemaPathsBody
 	data, err := afero.ReadFile(fsys, utils.ConfigPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Errorf("failed to read config: %w", err)
 	}
 	if newConfig := schemaPathsPattern.ReplaceAllLiteral(data, []byte(schemaPaths)); bytesContain(newConfig, []byte(schemaPaths)) {
+		return utils.WriteFile(utils.ConfigPath, newConfig, fsys)
+	}
+	if loc := dbMigrationsHeaderPattern.FindIndex(data); loc != nil {
+		newConfig := append([]byte{}, data[:loc[1]]...)
+		newConfig = append(newConfig, []byte(schemaPathsBody)...)
+		newConfig = append(newConfig, '\n')
+		newConfig = append(newConfig, data[loc[1]:]...)
 		return utils.WriteFile(utils.ConfigPath, newConfig, fsys)
 	}
 	f, err := fsys.OpenFile(utils.ConfigPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
@@ -213,6 +257,34 @@ func updateDeclarativeSchemaPathsConfig(fsys afero.Fs) error {
 	if _, err := f.WriteString(schemaPaths); err != nil {
 		return errors.Errorf("failed to write config: %w", err)
 	}
+	return nil
+}
+
+func generateToDir(ctx context.Context, sourceRef, targetRef string, overwrite bool, fsys afero.Fs, options ...func(*pgx.ConnConfig)) error {
+	declarativeDir, err := DeclarativeDirPath()
+	if err != nil {
+		return err
+	}
+	if !overwrite {
+		ok, err := confirmOverwrite(ctx, fsys)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(os.Stderr, "Skipped writing declarative schema.")
+			return nil
+		}
+	}
+	args := utils.GetPgdeltaGenerateArgs()
+	args = append(args, "--force")
+	if err := pgdelta.ExportDeclarativeRef(ctx, sourceRef, targetRef, declarativeDir, args, os.Stdout, os.Stderr, options...); err != nil {
+		return err
+	}
+	utils.Config.Db.Migrations.SchemaPaths = []string{declarativeDir}
+	if err := updateDeclarativeSchemaPathsConfig(fsys); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(declarativeDir))
 	return nil
 }
 
@@ -231,20 +303,17 @@ func getBaselineCatalogRef(ctx context.Context, noCache bool, fsys afero.Fs, opt
 		return "", err
 	}
 	defer utils.DockerRemove(shadow)
-	snapshot, err := diff.ExportCatalogPgDelta(ctx, utils.ToPostgresURL(config), "postgres", options...)
-	if err != nil {
-		return "", err
-	}
+	outputPath := cachePath
 	if noCache {
-		return writeTempCatalog(fsys, noCacheCatalogPath, snapshot)
+		outputPath = filepath.Join(pgDeltaTempPath(), noCacheCatalogPath)
 	}
 	if err := ensureTempDir(fsys); err != nil {
 		return "", err
 	}
-	if err := utils.WriteFile(cachePath, []byte(snapshot), fsys); err != nil {
+	if err := exportCatalogToPath(ctx, config, outputPath, options...); err != nil {
 		return "", err
 	}
-	return cachePath, nil
+	return outputPath, nil
 }
 
 // getMigrationsCatalogRef returns a catalog reference representing local
@@ -271,12 +340,9 @@ func getMigrationsCatalogRef(ctx context.Context, noCache bool, fsys afero.Fs, o
 	if err := diff.MigrateShadowDatabase(ctx, shadow, fsys, options...); err != nil {
 		return "", err
 	}
-	snapshot, err := diff.ExportCatalogPgDelta(ctx, utils.ToPostgresURL(config), "postgres", options...)
-	if err != nil {
-		return "", err
-	}
+	outputPath := cachePath
 	if noCache {
-		return writeTempCatalog(fsys, noCacheCatalogPath, snapshot)
+		outputPath = filepath.Join(pgDeltaTempPath(), noCacheCatalogPath)
 	}
 	if err := ensureTempDir(fsys); err != nil {
 		return "", err
@@ -284,10 +350,10 @@ func getMigrationsCatalogRef(ctx context.Context, noCache bool, fsys afero.Fs, o
 	if err := cleanupOldMigrationCatalogs(fsys, hash); err != nil {
 		return "", err
 	}
-	if err := utils.WriteFile(cachePath, []byte(snapshot), fsys); err != nil {
+	if err := exportCatalogToPath(ctx, config, outputPath, options...); err != nil {
 		return "", err
 	}
-	return cachePath, nil
+	return outputPath, nil
 }
 
 // getDeclarativeCatalogRef applies local declarative files to a shadow database
@@ -301,11 +367,11 @@ func getDeclarativeCatalogRef(ctx context.Context, fsys afero.Fs, options ...fun
 	if err := pgdelta.ApplyDeclarative(ctx, config, fsys); err != nil {
 		return "", err
 	}
-	snapshot, err := diff.ExportCatalogPgDelta(ctx, utils.ToPostgresURL(config), "postgres", options...)
-	if err != nil {
+	if err := ensureTempDir(fsys); err != nil {
 		return "", err
 	}
-	return writeTempCatalog(fsys, "catalog-declarative.json", snapshot)
+	path := filepath.Join(pgDeltaTempPath(), "catalog-declarative.json")
+	return path, exportCatalogToPath(ctx, config, path, options...)
 }
 
 // createShadow provisions and health-checks the temporary Postgres container
@@ -378,23 +444,14 @@ func cleanupOldMigrationCatalogs(fsys afero.Fs, keepHash string) error {
 	return nil
 }
 
-// writeTempCatalog writes a catalog snapshot under utils.TempDir and returns
-// the file path so callers can pass it to pg-delta as a source/target reference.
-func writeTempCatalog(fsys afero.Fs, name, snapshot string) (string, error) {
-	if err := ensureTempDir(fsys); err != nil {
-		return "", err
-	}
-	path := filepath.Join(pgDeltaTempPath(), name)
-	if err := utils.WriteFile(path, []byte(snapshot), fsys); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
 // ensureTempDir creates the shared temp directory used by declarative catalog
 // caches and ephemeral snapshots.
 func ensureTempDir(fsys afero.Fs) error {
 	return utils.MkdirIfNotExistFS(fsys, pgDeltaTempPath())
+}
+
+func exportCatalogToPath(ctx context.Context, config pgconn.Config, outputPath string, options ...func(*pgx.ConnConfig)) error {
+	return pgdelta.ExportCatalog(ctx, config, outputPath, nil, io.Discard, os.Stderr, options...)
 }
 
 func pgDeltaTempPath() string {
