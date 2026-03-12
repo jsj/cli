@@ -41,7 +41,7 @@ try {
     statements = formatSqlStatements(statements, formatOptions);
   }
   for (const sql of statements) {
-    console.log(`${sql};`);
+    console.log(`${sql};\n`);
   }
 } catch (e) {
   console.error(e);

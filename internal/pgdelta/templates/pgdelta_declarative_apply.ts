@@ -28,7 +28,6 @@ try {
     });
     const apply = result?.apply;
     if (!apply) {
-      console.error("pg-delta applyDeclarativeSchema returned unexpected shape:", result);
       throw new Error("");
     }
     const payload = {
@@ -40,12 +39,7 @@ try {
       errors: apply.errors ?? [],
       stuckStatements: apply.stuckStatements ?? [],
     };
-    console.log(
-      JSON.stringify(
-        payload,
-        (_key, value) => (typeof value === "bigint" ? Number(value) : value),
-      ),
-    );
+    console.log(JSON.stringify(payload));
     if (apply.status !== "success") {
       throw new Error("");
     }

@@ -3,7 +3,6 @@ package diff
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
@@ -85,8 +84,9 @@ func resolveMigrationsCatalogRef(ctx context.Context, fsys afero.Fs, options ...
 	if err != nil {
 		return "", err
 	}
-	cachePath := pgcache.MigrationCatalogPath(hash, "local")
-	if ok, err := afero.Exists(fsys, cachePath); err == nil && ok {
+	if cachePath, ok, err := pgcache.ResolveMigrationCatalogPath(fsys, hash, "local"); err != nil {
+		return "", err
+	} else if ok {
 		return cachePath, nil
 	}
 	shadow, err := CreateShadowDatabase(ctx, utils.Config.Db.ShadowPort)
@@ -112,10 +112,8 @@ func resolveMigrationsCatalogRef(ctx context.Context, fsys afero.Fs, options ...
 	if err != nil {
 		return "", err
 	}
-	if err := utils.MkdirIfNotExistFS(fsys, filepath.Dir(cachePath)); err != nil {
-		return "", err
-	}
-	if err := utils.WriteFile(cachePath, []byte(snapshot), fsys); err != nil {
+	cachePath, err := pgcache.WriteMigrationCatalogSnapshot(fsys, "local", hash, snapshot)
+	if err != nil {
 		return "", err
 	}
 	return cachePath, nil

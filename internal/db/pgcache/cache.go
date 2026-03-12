@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
@@ -20,9 +23,11 @@ import (
 )
 
 const (
-	pgDeltaTempDir         = "pgdelta"
-	migrationsCatalogName  = "catalog-%s-migrations-%s.json"
-	pgDeltaCatalogExportTS = `// This script serializes a database catalog for caching/reuse in declarative
+	pgDeltaTempDir              = "pgdelta"
+	migrationsCatalogName       = "catalog-%s-migrations-%s-%d.json"
+	legacyMigrationsCatalogName = "catalog-%s-migrations-%s.json"
+	catalogRetentionCount       = 2
+	pgDeltaCatalogExportTS      = `// This script serializes a database catalog for caching/reuse in declarative
 // pg-delta workflows. Uses the same API as pgdelta_catalog_export.ts (main package only, no /catalog subpath).
 import {
   createManagedPool,
@@ -69,10 +74,8 @@ func TryCacheMigrationsCatalog(ctx context.Context, config pgconn.Config, prefix
 	if err := ensureTempDir(fsys); err != nil {
 		return err
 	}
-	if err := CleanupOldMigrationCatalogs(fsys, prefix, hash); err != nil {
-		return err
-	}
-	return utils.WriteFile(MigrationCatalogPath(hash, prefix), []byte(snapshot), fsys)
+	_, err = WriteMigrationCatalogSnapshot(fsys, prefix, hash, snapshot)
+	return err
 }
 
 func ShouldCacheMigrationsCatalog() bool {
@@ -91,11 +94,64 @@ func CatalogPrefixFromConfig(config pgconn.Config) string {
 	return "url-" + hex.EncodeToString(sum[:])[:12]
 }
 
-func MigrationCatalogPath(hash, prefix string) string {
-	return filepath.Join(pgDeltaTempPath(), fmt.Sprintf(migrationsCatalogName, SanitizedCatalogPrefix(prefix), hash))
+func MigrationCatalogPath(hash, prefix string, createdAt time.Time) string {
+	return filepath.Join(pgDeltaTempPath(), fmt.Sprintf(migrationsCatalogName, SanitizedCatalogPrefix(prefix), hash, createdAt.UnixMilli()))
+}
+
+func ResolveMigrationCatalogPath(fsys afero.Fs, hash, prefix string) (string, bool, error) {
+	if err := ensureTempDir(fsys); err != nil {
+		return "", false, err
+	}
+	entries, err := afero.ReadDir(fsys, pgDeltaTempPath())
+	if err != nil {
+		return "", false, err
+	}
+	familyPrefix := fmt.Sprintf("catalog-%s-migrations-%s-", SanitizedCatalogPrefix(prefix), hash)
+	legacyName := fmt.Sprintf(legacyMigrationsCatalogName, SanitizedCatalogPrefix(prefix), hash)
+	latestPath := ""
+	latestTimestamp := int64(-1)
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, familyPrefix) && strings.HasSuffix(name, ".json") {
+			stamp := strings.TrimSuffix(strings.TrimPrefix(name, familyPrefix), ".json")
+			ts, err := strconv.ParseInt(stamp, 10, 64)
+			if err != nil {
+				continue
+			}
+			if ts > latestTimestamp {
+				latestTimestamp = ts
+				latestPath = filepath.Join(pgDeltaTempPath(), name)
+			}
+		}
+	}
+	if latestTimestamp >= 0 {
+		return latestPath, true, nil
+	}
+	legacyPath := filepath.Join(pgDeltaTempPath(), legacyName)
+	if ok, err := afero.Exists(fsys, legacyPath); err != nil {
+		return "", false, err
+	} else if ok {
+		return legacyPath, true, nil
+	}
+	return "", false, nil
+}
+
+func WriteMigrationCatalogSnapshot(fsys afero.Fs, prefix, hash, snapshot string) (string, error) {
+	if err := ensureTempDir(fsys); err != nil {
+		return "", err
+	}
+	path := MigrationCatalogPath(hash, prefix, time.Now().UTC())
+	if err := utils.WriteFile(path, []byte(snapshot), fsys); err != nil {
+		return "", err
+	}
+	if err := CleanupOldMigrationCatalogs(fsys, prefix, hash); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func CleanupOldMigrationCatalogs(fsys afero.Fs, prefix, keepHash string) error {
+	_ = keepHash
 	if err := ensureTempDir(fsys); err != nil {
 		return err
 	}
@@ -104,16 +160,51 @@ func CleanupOldMigrationCatalogs(fsys afero.Fs, prefix, keepHash string) error {
 		return err
 	}
 	keepPrefix := SanitizedCatalogPrefix(prefix)
-	keep := fmt.Sprintf(migrationsCatalogName, keepPrefix, keepHash)
+	familyPrefix := fmt.Sprintf("catalog-%s-migrations-", keepPrefix)
+	type catalogFile struct {
+		name      string
+		timestamp int64
+	}
+	var files []catalogFile
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, fmt.Sprintf("catalog-%s-migrations-", keepPrefix)) && name != keep {
-			if err := fsys.Remove(filepath.Join(pgDeltaTempPath(), name)); err != nil {
-				return err
-			}
+		if !strings.HasPrefix(name, familyPrefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if ts, ok := migrationCatalogTimestamp(name); ok {
+			files = append(files, catalogFile{name: name, timestamp: ts})
+			continue
+		}
+		files = append(files, catalogFile{name: name, timestamp: 0})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].timestamp == files[j].timestamp {
+			return files[i].name > files[j].name
+		}
+		return files[i].timestamp > files[j].timestamp
+	})
+	for i := catalogRetentionCount; i < len(files); i++ {
+		if err := fsys.Remove(filepath.Join(pgDeltaTempPath(), files[i].name)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func migrationCatalogTimestamp(name string) (int64, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(name, ".json")
+	idx := strings.LastIndex(raw, "-")
+	if idx < 0 || idx+1 >= len(raw) {
+		return 0, false
+	}
+	ts, err := strconv.ParseInt(raw[idx+1:], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return ts, true
 }
 
 func HashMigrations(fsys afero.Fs) (string, error) {
