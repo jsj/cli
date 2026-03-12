@@ -82,6 +82,9 @@ var (
 	usePgAdmin  bool
 	usePgSchema bool
 	usePgDelta  bool
+	diffFrom    string
+	diffTo      string
+	outputPath  string
 	schema      []string
 	file        string
 
@@ -89,9 +92,15 @@ var (
 		Use:   "diff",
 		Short: "Diffs the local database for schema changes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// EXPERIMENTAL_PG_DELTA enables pg-delta without requiring every command
-			// invocation to pass --use-pg-delta, which is useful for branch-wide testing.
-			useDelta := usePgDelta || viper.GetBool("EXPERIMENTAL_PG_DELTA")
+			if len(diffFrom) > 0 || len(diffTo) > 0 {
+				switch {
+				case len(diffFrom) == 0 || len(diffTo) == 0:
+					return fmt.Errorf("must set both --from and --to when using explicit diff mode")
+				default:
+					return diff.RunExplicit(cmd.Context(), diffFrom, diffTo, schema, outputPath, afero.NewOsFs())
+				}
+			}
+			useDelta := shouldUsePgDelta()
 			if usePgAdmin {
 				return diff.RunPgAdmin(cmd.Context(), schema, file, flags.DbConfig, afero.NewOsFs())
 			}
@@ -161,9 +170,7 @@ var (
 			if len(args) > 0 {
 				name = args[0]
 			}
-			// pull now has an opt-in pg-delta declarative mode, gated by experimental
-			// checks in pull.Run.
-			useDelta := usePgDelta || viper.GetBool("EXPERIMENTAL_PG_DELTA")
+			useDelta := shouldUsePgDelta()
 			return pull.Run(cmd.Context(), schema, flags.DbConfig, name, useDelta, afero.NewOsFs())
 		},
 		PostRun: func(cmd *cobra.Command, args []string) {
@@ -192,9 +199,7 @@ var (
 		Use:        "commit",
 		Short:      "Commit remote changes as a new migration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Keep remote commit behavior consistent with db pull when pg-delta mode
-			// is enabled through flag or environment.
-			useDelta := usePgDelta || viper.GetBool("EXPERIMENTAL_PG_DELTA")
+			useDelta := shouldUsePgDelta()
 			return pull.Run(cmd.Context(), schema, flags.DbConfig, "remote_commit", useDelta, afero.NewOsFs())
 		},
 	}
@@ -251,6 +256,10 @@ var (
 	}
 )
 
+func shouldUsePgDelta() bool {
+	return utils.IsPgDeltaEnabled() || usePgDelta || viper.GetBool("EXPERIMENTAL_PG_DELTA")
+}
+
 func init() {
 	// Build branch command
 	dbBranchCmd.AddCommand(dbBranchCreateCmd)
@@ -265,6 +274,9 @@ func init() {
 	diffFlags.BoolVar(&usePgSchema, "use-pg-schema", false, "Use pg-schema-diff to generate schema diff.")
 	diffFlags.BoolVar(&usePgDelta, "use-pg-delta", false, "Use pg-delta to generate schema diff.")
 	dbDiffCmd.MarkFlagsMutuallyExclusive("use-migra", "use-pgadmin", "use-pg-schema", "use-pg-delta")
+	diffFlags.StringVar(&diffFrom, "from", "", "Diff from local, linked, migrations, or a Postgres URL.")
+	diffFlags.StringVar(&diffTo, "to", "", "Diff to local, linked, migrations, or a Postgres URL.")
+	diffFlags.StringVarP(&outputPath, "output", "o", "", "Write explicit diff output to a file path.")
 	diffFlags.String("db-url", "", "Diffs against the database specified by the connection string (must be percent-encoded).")
 	diffFlags.Bool("linked", false, "Diffs local migration files against the linked project.")
 	diffFlags.Bool("local", true, "Diffs local migration files against the local database.")

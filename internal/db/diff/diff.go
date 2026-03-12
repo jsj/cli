@@ -50,6 +50,26 @@ func Run(ctx context.Context, schema []string, file string, config pgconn.Config
 }
 
 func loadDeclaredSchemas(fsys afero.Fs) ([]string, error) {
+	// When pg-delta is enabled, declarative path is the source of truth (config or default).
+	if utils.IsPgDeltaEnabled() {
+		declDir := utils.GetDeclarativeDir()
+		if exists, err := afero.DirExists(fsys, declDir); err == nil && exists {
+			var declared []string
+			if err := afero.Walk(fsys, declDir, func(path string, info fs.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if info.Mode().IsRegular() && filepath.Ext(info.Name()) == ".sql" {
+					declared = append(declared, path)
+				}
+				return nil
+			}); err != nil {
+				return nil, errors.Errorf("failed to walk declarative dir: %w", err)
+			}
+			sort.Strings(declared)
+			return declared, nil
+		}
+	}
 	if schemas := utils.Config.Db.Migrations.SchemaPaths; len(schemas) > 0 {
 		return schemas.Files(afero.NewIOFS(fsys))
 	}

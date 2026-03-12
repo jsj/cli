@@ -13,7 +13,9 @@ You can switch engines with diff flags:
 - `--use-pg-schema`
 - `--use-pg-delta`
 
-To make pg-delta the active engine across commands without repeating `--use-pg-delta`, set `SUPABASE_EXPERIMENTAL_PG_DELTA=1`.
+To make pg-delta the active engine across commands without repeating `--use-pg-delta`, set `SUPABASE_EXPERIMENTAL_PG_DELTA=1` or add `[experimental.pgdelta] enabled = true` in `supabase/config.toml`.
+
+You can run an explicit diff between two targets by setting both `--from` and `--to`. Allowed values are `local`, `linked`, or a database URL. Use `--output <path>` to write the diff to a file instead of stdout.
 
 By default, all schemas in the target database are diffed. Use the `--schema public,extensions` flag to restrict diffing to a subset of schemas.
 

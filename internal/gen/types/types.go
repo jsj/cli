@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -128,8 +129,23 @@ func GetRootCA(ctx context.Context, dbURL string, options ...func(*pgx.ConnConfi
 	return caStaging + caProd + caSnap, nil
 }
 
+func withRequireSSLMode(dbURL string) (string, error) {
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return "", errors.Errorf("failed to parse connection string: %w", err)
+	}
+	query := parsed.Query()
+	query.Set("sslmode", "require")
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
 func isRequireSSL(ctx context.Context, dbUrl string, options ...func(*pgx.ConnConfig)) (bool, error) {
-	conn, err := utils.ConnectByUrl(ctx, dbUrl+"&sslmode=require", options...)
+	requireSSLURL, err := withRequireSSLMode(dbUrl)
+	if err != nil {
+		return false, err
+	}
+	conn, err := utils.ConnectByUrl(ctx, requireSSLURL, options...)
 	if err != nil {
 		if strings.HasSuffix(err.Error(), "(server refused TLS connection)") {
 			return false, nil

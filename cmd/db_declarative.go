@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/supabase/cli/internal/db/declarative"
+	"github.com/supabase/cli/internal/db/start"
 	"github.com/supabase/cli/internal/utils"
 	"github.com/supabase/cli/internal/utils/flags"
 )
@@ -17,7 +19,9 @@ var (
 	declarativeOverwrite    bool
 	declarativeFromMigra    bool
 	declarativeToMigrations bool
+	declarativeLocal        bool
 	declarativeFile         string
+	declarativeName         string
 
 	// dbDeclarativeCmd introduces a dedicated command group for declarative workflows.
 	//
@@ -42,7 +46,7 @@ var (
 			case declarativeFromMigra:
 				return declarative.SyncFromMigrations(cmd.Context(), schema, declarativeNoCache, afero.NewOsFs())
 			default:
-				return declarative.SyncToMigrations(cmd.Context(), schema, declarativeFile, declarativeNoCache, afero.NewOsFs())
+				return declarative.SyncToMigrations(cmd.Context(), schema, resolveDeclarativeMigrationName(declarativeName, declarativeFile), declarativeNoCache, afero.NewOsFs())
 			}
 		},
 	}
@@ -53,6 +57,11 @@ var (
 		Use:   "generate",
 		Short: "Generate declarative schema from a database",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureLocalDatabaseStarted(cmd.Context(), declarativeLocal, utils.AssertSupabaseDbIsRunning, func(ctx context.Context) error {
+				return start.Run(ctx, "", afero.NewOsFs())
+			}); err != nil {
+				return err
+			}
 			return declarative.Generate(cmd.Context(), schema, flags.DbConfig, declarativeOverwrite, declarativeNoCache, afero.NewOsFs())
 		},
 		PostRun: func(cmd *cobra.Command, args []string) {
@@ -60,6 +69,30 @@ var (
 		},
 	}
 )
+
+func resolveDeclarativeMigrationName(name, file string) string {
+	switch {
+	case len(name) > 0:
+		return name
+	case len(file) > 0:
+		return file
+	default:
+		return "declarative_sync"
+	}
+}
+
+func ensureLocalDatabaseStarted(ctx context.Context, local bool, isRunning func() error, startDatabase func(context.Context) error) error {
+	if !local {
+		return nil
+	}
+	if err := isRunning(); err != nil {
+		if errors.Is(err, utils.ErrNotRunning) {
+			return startDatabase(ctx)
+		}
+		return err
+	}
+	return nil
+}
 
 func init() {
 	// no-cache allows bypassing catalog snapshots when users need a fresh view of
@@ -73,6 +106,7 @@ func init() {
 	syncFlags.BoolVar(&declarativeToMigrations, "to-migrations", false, "Generate a new migration to match declarative schema.")
 	syncFlags.StringSliceVarP(&schema, "schema", "s", []string{}, "Comma separated list of schema to include.")
 	syncFlags.StringVarP(&declarativeFile, "file", "f", "declarative_sync", "Saves schema diff to a new migration file.")
+	syncFlags.StringVar(&declarativeName, "name", "", "Name for the generated migration file.")
 	syncFlags.Bool("local", true, "Sync using the local database configuration.")
 
 	generateFlags := dbDeclarativeGenerateCmd.Flags()
@@ -80,7 +114,7 @@ func init() {
 	generateFlags.StringSliceVarP(&schema, "schema", "s", []string{}, "Comma separated list of schema to include.")
 	generateFlags.String("db-url", "", "Generates declarative schema from the database specified by the connection string (must be percent-encoded).")
 	generateFlags.Bool("linked", true, "Generates declarative schema from the linked project.")
-	generateFlags.Bool("local", false, "Generates declarative schema from the local database.")
+	generateFlags.BoolVar(&declarativeLocal, "local", false, "Generates declarative schema from the local database.")
 	dbDeclarativeGenerateCmd.MarkFlagsMutuallyExclusive("db-url", "linked", "local")
 	generateFlags.StringVarP(&dbPassword, "password", "p", "", "Password to your remote Postgres database.")
 	cobra.CheckErr(viper.BindPFlag("DB_PASSWORD", generateFlags.Lookup("password")))

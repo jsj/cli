@@ -95,14 +95,18 @@ func pullDeclarativePgDelta(ctx context.Context, schema []string, config pgconn.
 		Password: utils.Config.Db.Password,
 		Database: "postgres",
 	}
-	exported, err := diff.DeclarativeExportPgDelta(ctx, shadowConfig, config, schema, options...)
+	formatOptions := ""
+	if utils.Config.Experimental.PgDelta != nil {
+		formatOptions = strings.TrimSpace(utils.Config.Experimental.PgDelta.FormatOptions)
+	}
+	exported, err := diff.DeclarativeExportPgDelta(ctx, shadowConfig, config, schema, formatOptions, options...)
 	if err != nil {
 		return err
 	}
 	if err := declarative.WriteDeclarativeSchemas(exported, fsys); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(utils.DeclarativeDir))
+	fmt.Fprintln(os.Stderr, "Declarative schema written to "+utils.Bold(utils.GetDeclarativeDir()))
 	return nil
 }
 

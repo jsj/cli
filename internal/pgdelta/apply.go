@@ -6,12 +6,12 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"github.com/go-errors/errors"
 	"github.com/jackc/pgconn"
 	"github.com/spf13/afero"
 	"github.com/supabase/cli/internal/utils"
+	"os"
+	"path/filepath"
 )
 
 //go:embed templates/pgdelta_declarative_apply.ts
@@ -34,7 +34,7 @@ type ApplyResult struct {
 // This is intentionally separate from migration apply so declarative workflows
 // can evolve independently from timestamped migration execution.
 func ApplyDeclarative(ctx context.Context, config pgconn.Config, fsys afero.Fs) error {
-	declarativeDir := utils.DeclarativeDir
+	declarativeDir := utils.GetDeclarativeDir()
 	if _, err := fsys.Stat(declarativeDir); err != nil {
 		return errors.Errorf("declarative schema directory not found: %s", declarativeDir)
 	}
@@ -69,4 +69,3 @@ func ApplyDeclarative(ctx context.Context, config pgconn.Config, fsys afero.Fs) 
 	fmt.Fprintf(os.Stderr, "Applied %d statements in %d round(s).\n", result.TotalApplied, result.TotalRounds)
 	return nil
 }
-

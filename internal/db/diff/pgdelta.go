@@ -55,17 +55,28 @@ func containerRef(ref string) string {
 	return "/workspace/" + ref
 }
 
+// pgDeltaFormatOptions returns the experimental.pgdelta.format_options config for
+// use when invoking pg-delta scripts that produce SQL output.
+func pgDeltaFormatOptions() string {
+	if utils.Config.Experimental.PgDelta == nil {
+		return ""
+	}
+	return strings.TrimSpace(utils.Config.Experimental.PgDelta.FormatOptions)
+}
+
 // DiffPgDelta diffs source and target Postgres configs via pg-delta.
 //
 // This wrapper preserves the old config-based interface while delegating to
-// DiffPgDeltaRef, which also supports catalog-file references.
+// DiffPgDeltaRef, which also supports catalog-file references. Format options
+// are read from config so DiffFunc callers do not need to change.
 func DiffPgDelta(ctx context.Context, source, target pgconn.Config, schema []string, options ...func(*pgx.ConnConfig)) (string, error) {
-	return DiffPgDeltaRef(ctx, utils.ToPostgresURL(source), utils.ToPostgresURL(target), schema, options...)
+	return DiffPgDeltaRef(ctx, utils.ToPostgresURL(source), utils.ToPostgresURL(target), schema, pgDeltaFormatOptions(), options...)
 }
 
 // DiffPgDeltaRef supports pg-delta diffing across both live database URLs and
-// on-disk catalog references used by declarative sync commands.
-func DiffPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []string, options ...func(*pgx.ConnConfig)) (string, error) {
+// on-disk catalog references used by declarative sync commands. formatOptions
+// is passed through as FORMAT_OPTIONS to the pg-delta script when non-empty.
+func DiffPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []string, formatOptions string, options ...func(*pgx.ConnConfig)) (string, error) {
 	env := []string{
 		"TARGET=" + containerRef(targetRef),
 	}
@@ -82,6 +93,9 @@ func DiffPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []s
 	if len(schema) > 0 {
 		env = append(env, "INCLUDED_SCHEMAS="+strings.Join(schema, ","))
 	}
+	if len(strings.TrimSpace(formatOptions)) > 0 {
+		env = append(env, "FORMAT_OPTIONS="+formatOptions)
+	}
 	binds := []string{utils.EdgeRuntimeId + ":/root/.cache/deno:rw"}
 	if cwd, err := os.Getwd(); err == nil {
 		binds = append(binds, cwd+":/workspace")
@@ -95,13 +109,13 @@ func DiffPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []s
 
 // DeclarativeExportPgDelta exports target schema as declarative file payloads
 // while keeping a config-based API for existing call sites.
-func DeclarativeExportPgDelta(ctx context.Context, source, target pgconn.Config, schema []string, options ...func(*pgx.ConnConfig)) (DeclarativeOutput, error) {
-	return DeclarativeExportPgDeltaRef(ctx, utils.ToPostgresURL(source), utils.ToPostgresURL(target), schema, options...)
+func DeclarativeExportPgDelta(ctx context.Context, source, target pgconn.Config, schema []string, formatOptions string, options ...func(*pgx.ConnConfig)) (DeclarativeOutput, error) {
+	return DeclarativeExportPgDeltaRef(ctx, utils.ToPostgresURL(source), utils.ToPostgresURL(target), schema, formatOptions, options...)
 }
 
 // DeclarativeExportPgDeltaRef exports declarative file payloads using either
 // live URLs or catalog references as source/target inputs.
-func DeclarativeExportPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []string, options ...func(*pgx.ConnConfig)) (DeclarativeOutput, error) {
+func DeclarativeExportPgDeltaRef(ctx context.Context, sourceRef, targetRef string, schema []string, formatOptions string, options ...func(*pgx.ConnConfig)) (DeclarativeOutput, error) {
 	env := []string{
 		"TARGET=" + containerRef(targetRef),
 	}
@@ -117,6 +131,9 @@ func DeclarativeExportPgDeltaRef(ctx context.Context, sourceRef, targetRef strin
 	}
 	if len(schema) > 0 {
 		env = append(env, "INCLUDED_SCHEMAS="+strings.Join(schema, ","))
+	}
+	if len(strings.TrimSpace(formatOptions)) > 0 {
+		env = append(env, "FORMAT_OPTIONS="+formatOptions)
 	}
 	binds := []string{utils.EdgeRuntimeId + ":/root/.cache/deno:rw"}
 	if cwd, err := os.Getwd(); err == nil {

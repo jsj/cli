@@ -127,6 +127,17 @@ func AssertServiceIsRunning(ctx context.Context, containerId string) error {
 	return nil
 }
 
+func GetDeclarativeDir() string {
+	if Config.Experimental.PgDelta != nil && len(Config.Experimental.PgDelta.DeclarativeSchemaPath) > 0 {
+		return Config.Experimental.PgDelta.DeclarativeSchemaPath
+	}
+	return DeclarativeDir
+}
+
+func IsPgDeltaEnabled() bool {
+	return Config.Experimental.PgDelta != nil && Config.Experimental.PgDelta.Enabled
+}
+
 func IsGitRepo() bool {
 	opts := &git.PlainOpenOptions{DetectDotGit: true}
 	_, err := git.PlainOpenWithOptions(".", opts)

@@ -5,15 +5,14 @@ import {
   createPlan,
   deserializeCatalog,
   exportDeclarativeSchema,
-} from "npm:@supabase/pg-delta@1.0.0-alpha.7";
-import { supabase } from "npm:@supabase/pg-delta@1.0.0-alpha.7/integrations/supabase";
+} from "npm:@supabase/pg-delta@1.0.0-alpha.8";
+import { supabase } from "npm:@supabase/pg-delta@1.0.0-alpha.8/integrations/supabase";
 
 async function resolveInput(ref: string | undefined) {
-  if (
-    !ref ||
-    ref.startsWith("postgres://") ||
-    ref.startsWith("postgresql://")
-  ) {
+  if (!ref) {
+    return null;
+  }
+  if (ref.startsWith("postgres://") || ref.startsWith("postgresql://")) {
     return ref;
   }
   const json = await Deno.readTextFile(ref);

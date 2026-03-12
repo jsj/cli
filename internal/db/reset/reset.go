@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v4"
 	"github.com/spf13/afero"
+	"github.com/supabase/cli/internal/db/pgcache"
 	"github.com/supabase/cli/internal/db/start"
 	"github.com/supabase/cli/internal/gen/keys"
 	"github.com/supabase/cli/internal/migration/apply"
@@ -108,7 +109,16 @@ func resetDatabase14(ctx context.Context, version string, fsys afero.Fs, options
 		return err
 	}
 	defer conn.Close(context.Background())
-	return apply.MigrateAndSeed(ctx, version, conn, fsys)
+	if err := apply.MigrateAndSeed(ctx, version, conn, fsys); err != nil {
+		return err
+	}
+	return pgcache.TryCacheMigrationsCatalog(ctx, pgconn.Config{
+		Host:     utils.Config.Hostname,
+		Port:     utils.Config.Db.Port,
+		User:     "postgres",
+		Password: utils.Config.Db.Password,
+		Database: "postgres",
+	}, "local", version, fsys, options...)
 }
 
 func resetDatabase15(ctx context.Context, version string, fsys afero.Fs, options ...func(*pgx.ConnConfig)) error {

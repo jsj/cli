@@ -229,6 +229,12 @@ type (
 		Rules []rule `toml:"rules"`
 	}
 
+	PgDeltaConfig struct {
+		Enabled               bool   `toml:"enabled"`
+		DeclarativeSchemaPath string `toml:"declarative_schema_path"`
+		FormatOptions         string `toml:"format_options"`
+	}
+
 	rule struct {
 		Query string `toml:"query"`
 		Name  string `toml:"name"`
@@ -237,13 +243,14 @@ type (
 	}
 
 	experimental struct {
-		OrioleDBVersion string    `toml:"orioledb_version"`
-		S3Host          string    `toml:"s3_host"`
-		S3Region        string    `toml:"s3_region"`
-		S3AccessKey     string    `toml:"s3_access_key"`
-		S3SecretKey     string    `toml:"s3_secret_key"`
-		Webhooks        *webhooks `toml:"webhooks"`
-		Inspect         inspect   `toml:"inspect"`
+		OrioleDBVersion string         `toml:"orioledb_version"`
+		S3Host          string         `toml:"s3_host"`
+		S3Region        string         `toml:"s3_region"`
+		S3AccessKey     string         `toml:"s3_access_key"`
+		S3SecretKey     string         `toml:"s3_secret_key"`
+		Webhooks        *webhooks      `toml:"webhooks"`
+		PgDelta         *PgDeltaConfig `toml:"pgdelta"`
+		Inspect         inspect        `toml:"inspect"`
 	}
 )
 
@@ -314,6 +321,10 @@ func (c *baseConfig) Clone() baseConfig {
 	if c.Experimental.Webhooks != nil {
 		webhooks := *c.Experimental.Webhooks
 		copy.Experimental.Webhooks = &webhooks
+	}
+	if c.Experimental.PgDelta != nil {
+		pgDelta := *c.Experimental.PgDelta
+		copy.Experimental.PgDelta = &pgDelta
 	}
 	return copy
 }
@@ -771,6 +782,11 @@ func (c *baseConfig) resolve(builder pathBuilder, fsys fs.FS) error {
 		if len(pattern) > 0 && !filepath.IsAbs(pattern) {
 			c.Db.Migrations.SchemaPaths[i] = path.Join(builder.SupabaseDirPath, pattern)
 		}
+	}
+	if c.Experimental.PgDelta != nil &&
+		len(c.Experimental.PgDelta.DeclarativeSchemaPath) > 0 &&
+		!filepath.IsAbs(c.Experimental.PgDelta.DeclarativeSchemaPath) {
+		c.Experimental.PgDelta.DeclarativeSchemaPath = path.Join(builder.SupabaseDirPath, c.Experimental.PgDelta.DeclarativeSchemaPath)
 	}
 	return nil
 }
@@ -1613,6 +1629,9 @@ func ToTomlBytes(config any) ([]byte, error) {
 func (e *experimental) validate() error {
 	if e.Webhooks != nil && !e.Webhooks.Enabled {
 		return errors.Errorf("Webhooks cannot be deactivated. [experimental.webhooks] enabled can either be true or left undefined")
+	}
+	if e.PgDelta != nil && len(e.PgDelta.FormatOptions) > 0 && !json.Valid([]byte(e.PgDelta.FormatOptions)) {
+		return errors.Errorf("Invalid config for experimental.pgdelta.format_options: must be valid JSON")
 	}
 	return nil
 }

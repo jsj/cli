@@ -12,4 +12,4 @@ If no entries exist in the migration history table, `pg_dump` will be used to ca
 
 When `--use-pg-delta` is enabled (with experimental mode), `db pull` can export declarative schema files instead of creating a migration file. In this mode, schema output is written under `supabase/declarative`, and schema paths in project config are updated to point at declarative SQL files.
 
-The same mode can be enabled branch-wide by setting `SUPABASE_EXPERIMENTAL_PG_DELTA=1` and enabling experimental features.
+The same mode can be enabled branch-wide by setting `SUPABASE_EXPERIMENTAL_PG_DELTA=1` and enabling experimental features, or by adding `[experimental.pgdelta] enabled = true` in `supabase/config.toml`.
